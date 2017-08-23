@@ -65,26 +65,48 @@ menu @SReject/JSONForMirc/Log {
 ;;===================================;;
 
 
-;; /JSONOpen -dbfuUwtN @Name @Input
+;; /JSONOpen -dbfuUwtN @Name @Input @Callback
 ;;     Creates a JSON handle instance
 ;;
 ;;     -d:  Closes the handler after the script finishes
+;;              Cannot be used with -a
+;;
 ;;     -b:  The input is a bvar
+;;
 ;;     -f:  The input is a file
+;;
 ;;     -u:  The input is from a url
+;;
 ;;     -U:  The input is from a url and its data should not be parsed
-;;     -w:  Used with -u; The handle should wait for /JSONHttpGet to be called to perform the url request
+;;
+;;     -w:  The handle should wait for /JSONHttpGet to be called to perform the url request
+;;              Used with -u or -U
+;;
+;;     -a:  The HTTP request will be done asyncronously, calling the callback when its finished.
+;;              Caller-context will be lost
+;;              Used with -u or -U
+;;              Cannot be used with -d
+;;
+;;     -tN: Sets the number of seconds to wait for the HTTP to finish before aborting and raising an error
+;;              if N is 0(zero) the timeout is infinite
+;;              if not specified the timeout is 60s
+;;              Used with -u or -U
 ;;
 ;;     @Name - String - Required
 ;;         The name to use to reference the JSON handler
 ;;             Cannot be a numerical value
 ;;             Disallowed Characters: ? * : and space
 ;;
-;;    @Input - String - Required
-;;        The input json to parse
-;;        If -b is used, the input is contained in the specified bvar
-;;        if -f is used, the input is contained in the specified file
-;;        if -u is used, the input is a URL that returns the json to parse
+;;     @Input - String - Required
+;;         The input json to parse
+;;         If -b is used, the input is contained in the specified bvar
+;;         if -f is used, the input is contained in the specified file
+;;         if -u is used, the input is a URL that returns the json to parse
+;;         If no 'type' switches are used, the input is considered as plain text
+;;
+;;     @Callback
+;;         The alias to call when the asyncronous HTTP finishes or is aborted
+;;             The callback is passed a single argument: the handle @Name
 alias JSONOpen {
 
   ;; Insure the alias was called as a command
@@ -98,7 +120,7 @@ alias JSONOpen {
   }
 
   ;; Local variable declarations
-  var %Switches, %Error, %Com = $false, %Type = text, %HttpOptions = 0, %BVar, %BUnset = $true
+  var %Switches, %Error, %Com = $false, %BVar, %BUnset = $true, %Type = text, %HttpTimeout = 60, %HttpWait = $false, %HttpParse = $True, %HttpAsync = $false
 
   ;; Log the /JSONOpen command is being called
   jfm_log -I /JSONOpen $1-
@@ -115,10 +137,10 @@ alias JSONOpen {
   }
 
   ;; Basic switch validation
-  elseif (!$regex(SReject/JSONOpen/switches, %Switches, ^[dbfuUw]*$)) {
+  elseif (!$regex(SReject/JSONOpen/switches, %Switches, ^(?:[dbfuUwa]|(?:t\d*))*$)) {
     %Error = SWITCH_INVALID
   }
-  elseif ($regex(%Switches, ([dbfuUw]).*?\1)) {
+  elseif ($regex(%Switches, ([dbfuUwat]).*?\1)) {
     %Error = SWITCH_DUPLICATE: $+ $regml(1)
   }
   elseif ($regex(%Switches, /([bfuU])/g) > 1) {
@@ -126,6 +148,15 @@ alias JSONOpen {
   }
   elseif (u !isin %Switches) && (w isincs %Switches) {
     %Error = SWITCH_NOT_APPLICABLE:w
+  }
+  elseif (u !isin %Switches) && (a isincs %Switches) {
+    %Error = SWITCH_NOT_APPLICABLE:a
+  }
+  elseif (u !isin %Switches) && (t isincs %Switches) {
+    %Error = SWITCH_NOT_APPLICABLE:t
+  }
+  elseif ($regex(JSONOpen:Timeout, %Switches,/t(\d*)/) && $regml(JSONOpen:Timeout, 1) == $null) {
+    %Error = TIMEOUT_NOT_SPECIFIED
   }
 
   ;; Validate handler name input
@@ -165,7 +196,6 @@ alias JSONOpen {
     %Com = JSON: $+ $1
     %BVar = $jfm_TmpBVar
 
-
     ;; If input is a bvar indicate it is the bvar to read from and that it
     ;; Should NOT be unset after processing
     if (b isincs %Switches) {
@@ -176,13 +206,19 @@ alias JSONOpen {
     ;; If the input is a url store if the request should wait, and set the
     ;; bvar to the URL to request
     elseif (u isin %Switches) {
-      if (w isincs %Switches) {
-        inc %HttpOptions 1
-      }
-      if (U isincs %Switches) {
-        inc %HttpOptions 2
-      }
       %Type = http
+      if (U isincs %Switches) {
+        %HttpParse = $false
+      }
+      if (w isincs %Switches) {
+        %HttpWait = $true
+      }
+      if (a isincs %Switches) {
+        %HttpAsync = $true
+      }
+      if ($regml(JSONOpen:Timeout, 1)) {
+        %HttpTimeout = $v1
+      }
       bset -t %BVar 1 $2
     }
 
@@ -196,12 +232,25 @@ alias JSONOpen {
       bset -t %BVar 1 $2-
     }
 
-    jfm_ToggleTimers -p
+    ;; Attempt to create the json handler; store any errors that occur
+    if (!$com(SReject/JSONForMirc/JSONEngine, JSONCreate, 1, bstr, %Type, &bstr, %BVar, bool, %HttpWait, bool, %HttpParse, bool, %HttpAsync, int, %HttpTimeout, dispatch* %Com)) || ($comerr) || (!$com(%Com)) {
+      %Error = $jfm_GetError
+    }
 
-    ;; Attempt to create the handler
-    %Error = $jfm_Create(%Com, %Type, %BVar, %HttpOptions)
+    ;; if text, parse
+    elseif (%Type == text) {
+      %Error = $jfm_Exec(%Com, parse)
+    }
 
-    jfm_ToggleTimers -r
+    ;; if http but not wait and not async, parse
+    elseif (!%HttpWait && !%HttpAsync) {
+      %Error = $jfm_Exec(%Com, parse)
+    }
+
+    ;; if async http
+    elseif (!%HttpWait && %HttpAsync) {
+
+    }
   }
 
   ;; Error handling: if an client error occured, store the error message then clear the error state
@@ -501,17 +550,12 @@ alias JSONHttpFetch {
         bset -t %BVar 1 $2-
       }
 
-      ;; Attempt to store the data with the handler instance
-      %Error = $jfm_Exec(%Com, httpSetData, & %BVar).fromBvar
+      %Errpr = $jfm_RawExec(%com, httpSetData, array &ui1, %bvar)
     }
 
     ;; Call the js-side parse function for the handler
     if (!%Error) {
-      jfm_ToggleTimers -p
-
       %Error = $jfm_Exec(%Com, parse)
-
-      jfm_ToggleTimers -r
     }
   }
 
@@ -1798,6 +1842,60 @@ alias -l jfm_Exec {
     jfm_log -EsD Result stored in $hget(SReject/JSONForMirc,Exec)
   }
 }
+
+
+;; $jfm_RawExec(@Name, @Method, [@Args])
+;;     Executes the js method of the specified name
+;;         Stores the result in a tmp bvar and stores the name in 'SReject/JSONForMirc Exec' hashtable
+;;         If an error occurs, returns the error
+;;
+;;     @Name - string - Required
+;;         The name of the open JSON handler
+;;
+;;     @Method - string - Required
+;;         The method of the open JSON handler to call
+;;
+;;     @Args - string - Optional
+;;         The arguments to pass to the method
+alias -l jfm_RawExec {
+
+  ;; Local variable declaration
+  var %Index = 0, %Args, %Params, %Error
+
+  ;; Cleanup from previous call
+  if ($hget(SReject/JSONForMirc, Exec)) {
+    hdel SReject/JSONForMirc Exec
+  }
+
+  ;; Loop over inputs, storing them in %Args(for logging), and %Params(for com calling)
+  while (%Index < $0) {
+    inc %Index
+    %Args = %Args $+ $iif($len(%Args), $chr(44)) $+ $evalnext($ $+ %Index)
+    if (%Index >= 3) {
+      %Params = %Params $+ ,$ $+ %Index
+    }
+  }
+  %Params = $!com($1,$2,1 $+ %Params $+ )
+
+  ;; Log the call
+  jfm_log -I $!jfm_Exec( $+ %Args $+ )
+
+
+  ;; Attempt the com call and if an error occurs
+  ;;   retrieve the error, log the error, and return it
+  if (!$evalnext(%Params) || $comerr) {
+    %Error = $jfm_GetError
+    jfm_log -EeD %Error
+    return %Error
+  }
+  ;; Otherwise create a temp bvar, store the result in the the bvar
+  else {
+    hadd -mu0 SReject/JSONForMirc Exec $jfm_tmpbvar
+    noop $com($1, $hget(SReject/JSONForMirc, Exec)).result
+    jfm_log -EsD Result stored in $hget(SReject/JSONForMirc,Exec)
+  }
+}
+
 
 
 ;; When debug is enabled

@@ -491,11 +491,11 @@
         }
     };
 
-    JSONCreate = function(type, source, parse) {
+    JSONCreate = function(type, source, httpWait, httpParse, httpAsync, httpTimeout) {
         var self = new JSONInstance();
         self._state = 'init';
         self._type = (type || 'text').toLowerCase();
-        self._parse = parse === false ? false : true;
+        self._parse = httpParse === false ? false : true;
 
         if (self._type === 'http') {
             if (!HTTPObject) {
@@ -504,6 +504,7 @@
             }
             self._state = 'http_pending';
             self._http.url = source;
+
         } else {
             self._state = 'parse_pending';
             self._input = source;
