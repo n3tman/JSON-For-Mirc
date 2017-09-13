@@ -550,7 +550,7 @@ alias JSONHttpFetch {
         bset -t %BVar 1 $2-
       }
 
-      %Errpr = $jfm_RawExec(%com, httpSetData, array &ui1, %bvar)
+      %Error = $jfm_RawExec(%com, httpSetData, array &ui1, %bvar)
     }
 
     ;; Call the js-side parse function for the handler
